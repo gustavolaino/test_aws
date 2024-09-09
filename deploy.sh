@@ -17,7 +17,7 @@ echo "Bucket S3 criado com sucesso: $S3_BUCKET_NAME"
 
 # 2. Carregar o conteúdo estático no bucket S3
 echo "Carregando o conteúdo estático no bucket S3..."
-aws s3 cp $INDEX_FILE s3://$S3_BUCKET_NAME/
+aws s3 cp /home/gustavo/test_aws/$INDEX_FILE s3://$S3_BUCKET_NAME/
 if [ $? -ne 0 ]; then
   echo "Erro ao carregar o conteúdo no bucket S3."
   exit 1
