@@ -8,7 +8,7 @@ INDEX_FILE_PATH="./$INDEX_FILE" # Ajuste o caminho conforme necessário
 
 # 1. Provisionar o bucket S3
 echo "Criando o bucket S3..."
-aws s3api create-bucket --bucket $S3_BUCKET_NAME --region us-east-1 --create-bucket-configuration LocationConstraint=us-east-1
+aws s3api create-bucket --bucket $S3_BUCKET_NAME --region us-east-1
 if [ $? -ne 0 ]; then
   echo "Erro ao criar o bucket S3. O bucket pode já existir."
   exit 1
