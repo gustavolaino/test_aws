@@ -30,7 +30,7 @@ echo "Conteúdo carregado com sucesso no bucket S3."
 # 3. Criar o Origin Access Control (OAC)
 echo "Criando o Origin Access Control (OAC)..."
 OAC_RESPONSE=$(aws cloudfront create-origin-access-control \
-  --origin-access-control-config Name=$OAC_NAME,Description="OAC para $S3_BUCKET_NAME",OriginAccessControlOriginType=s3,SigningBehavior=sigv4,SigningProtocol=sigv4)
+  --origin-access-control-config Name=$OAC_NAME,Description="OAC para $S3_BUCKET_NAME",OriginAccessControlOriginType=s3,SigningBehavior=always,SigningProtocol=sigv4)
 if [ $? -ne 0 ]; then
   echo "Erro ao criar o Origin Access Control (OAC)."
   exit 1
