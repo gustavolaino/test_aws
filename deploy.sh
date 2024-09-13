@@ -1,86 +1,85 @@
 #!/bin/bash
 
-# Variáveis
-S3_BUCKET_NAME="treinamentoiteris"
-CLOUDFRONT_DISTRIBUTION_ID_FILE="cloudfront_distribution_id.txt"
-INDEX_FILE="index.html"
-OAC_NAME="MyOAC"
+BUCKET_NAME='treinamentoiteris'
 REGION="us-east-1"
+FILE='index.html'
 
-# 1. Provisionar o bucket S3
-echo "Criando o bucket S3..."
-aws s3api create-bucket --bucket $S3_BUCKET_NAME --region $REGION
-if [ $? -ne 0 ]; then
-  echo "Erro ao criar o bucket S3."
-  exit 1
-fi
+# Criar um Bucket na região correta
+echo "Criando S3 Bucket $BUCKET_NAME..."
+aws s3api create-bucket --bucket $BUCKET_NAME --region $REGION 
 
-echo "Bucket S3 criado com sucesso: $S3_BUCKET_NAME"
+# Upload de arquivo no S3 bucket
+echo "Realizando o upload do arquivo..."
+aws s3 cp $FILE s3://$BUCKET_NAME/
 
-# 2. Carregar o conteúdo estático no bucket S3
-echo "Carregando o conteúdo estático no bucket S3..."
-aws s3 cp $INDEX_FILE s3://$S3_BUCKET_NAME/
-if [ $? -ne 0 ]; then
-  echo "Erro ao carregar o conteúdo no bucket S3."
-  exit 1
-fi
+# Criar CloudFront Origin Access Control
+echo "Criando OAC..."
+aws cloudfront create-origin-access-control \
+    --origin-access-control-config '{
+        "Name": "MeuOAC",
+        "Description": "OAC para acesso seguro ao bucket S3",
+        "SigningProtocol": "sigv4",
+        "SigningBehavior": "always",
+        "OriginAccessControlOriginType": "s3"
+    }' > oac_response.json
 
-echo "Conteúdo carregado com sucesso no bucket S3."
-
-# 3. Criar o Origin Access Control (OAC)
-echo "Criando o Origin Access Control (OAC)..."
-OAC_RESPONSE=$(aws cloudfront create-origin-access-control \
-  --origin-access-control-config Name=$OAC_NAME,Description="OAC para $S3_BUCKET_NAME",OriginAccessControlOriginType=s3,SigningBehavior=always,SigningProtocol=sigv4)
-if [ $? -ne 0 ]; then
-  echo "Erro ao criar o Origin Access Control (OAC)."
-  exit 1
-fi
-
-# Extrair o ID do OAC usando jq
-OAC_ID=$(echo $OAC_RESPONSE | jq -r '.OriginAccessControl.Id')
+# Extrair ID do OAC
+OAC_ID=$(cat oac_response.json | jq -r '.OriginAccessControl.Id')
 echo "OAC criado com ID: $OAC_ID"
 
-# 4. Configurar a distribuição CloudFront com o OAC
-echo "Criando a distribuição CloudFront..."
-DISTRIBUTION_ID=$(aws cloudfront create-distribution \
-  --origin-domain-name "$S3_BUCKET_NAME.s3.amazonaws.com" \
-  --default-root-object "index.html" \
-  --origin-access-control-id $OAC_ID \
-  --query 'Distribution.Id' \
-  --output text)
-if [ $? -ne 0 ]; then
-  echo "Erro ao criar a distribuição CloudFront."
-  exit 1
-fi
+# Criar uma CloudFront Distribution (sem o OAC inicialmente)
+echo "Criando CloudFront Distribution..."
+aws cloudfront create-distribution \
+    --origin-domain-name $BUCKET_NAME.s3.amazonaws.com \
+    --default-root-object index.html \
+    --query 'Distribution.{Id:Id}' --output json > cf_response.json
 
-echo "Distribuição CloudFront criada com sucesso. ID: $DISTRIBUTION_ID"
-echo $DISTRIBUTION_ID > $CLOUDFRONT_DISTRIBUTION_ID_FILE
+# Extrair ID da distribuição CloudFront
+ID_CLOUDFRONT=$(cat cf_response.json | jq -r '.Id')
+echo "CloudFront Distribution criada com ID: $ID_CLOUDFRONT"
 
-# 5. Bloquear acesso público ao bucket S3
-echo "Bloqueando acesso público ao bucket S3..."
-aws s3api put-bucket-policy --bucket $S3_BUCKET_NAME --policy "{
-  \"Version\": \"2012-10-17\",
-  \"Statement\": [
+# Obter a configuração atual da distribuição para edição
+echo "Atualizando a CloudFront Distribution para incluir o OAC..."
+aws cloudfront get-distribution-config --id $ID_CLOUDFRONT > cf_config.json
+
+ETAG=$(cat cf_config.json | jq -r '.ETag')
+
+# Modificar a configuração da distribuição para usar o OAC
+CONFIG=$(cat cf_config.json | jq '.DistributionConfig | .Origins.Items[0].S3OriginConfig |= {OriginAccessIdentity: ""} | .Origins.Items[0] += {"OriginAccessControlId": "'$OAC_ID'"}')
+
+# Atualizar a distribuição com a nova configuração
+aws cloudfront update-distribution --id $ID_CLOUDFRONT \
+    --distribution-config "$CONFIG" \
+    --if-match $ETAG
+
+# Atualizar a política do bucket S3 para permitir o acesso apenas via OAC do CloudFront
+echo "Atualizando a política do bucket para restringir o acesso..."
+ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+
+POLICY=$(cat <<EOF
+{
+    "Version": "2008-10-17",
+    "Statement": [
     {
-      \"Effect\": \"Allow\",
-      \"Principal\": {
-        \"Service\": \"cloudfront.amazonaws.com\"
-      },
-      \"Action\": \"s3:GetObject\",
-      \"Resource\": \"arn:aws:s3:::$S3_BUCKET_NAME/*\",
-      \"Condition\": {
-        \"StringEquals\": {
-          \"AWS:SourceArn\": \"arn:aws:cloudfront::$ACCOUNT_ID:distribution/$DISTRIBUTION_ID\"
+    "Sid": "AllowCloudFrontServicePrincipal",
+    "Effect": "Allow",
+    "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+    },
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::$BUCKET_NAME/*",
+    "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::$ACCOUNT_ID:distribution/$ID_CLOUDFRONT"
         }
       }
     }
   ]
-}"
-if [ $? -ne 0 ]; then
-  echo "Erro ao bloquear acesso público ao bucket S3."
-  exit 1
-fi
+}
+EOF
+)
 
-echo "Acesso público bloqueado com sucesso para o bucket S3."
+# Aplicar a política no bucket
+aws s3api put-bucket-policy --bucket $BUCKET_NAME --policy "$POLICY"
 
-echo "Configuração concluída."
+echo "Configuração finalizada com sucesso!"
